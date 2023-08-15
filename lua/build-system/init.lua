@@ -7,8 +7,9 @@ M.current_build_file = nil
 M.remove_commands = {}
 M.interactive_build_function = nil
 -- parses a string formateted like "command_name : command1 command2"
-M.build_file_regex_pattern = "([^\r\n\t]+):%s*(%S+.*)"
+M.build_file_regex_pattern = "^(%S+)%s*:%s*(.*)$"
 
+-- TODO: make this async
 -- opts.source_file_function(opts, file_path) - a function that customizes what should be done with the source_file
 local source_file = function(opts, file_path)
     opts = opts or {}
@@ -117,8 +118,6 @@ end
 
 local clean_whitespaces = function(line)
     line = line:gsub("\t", " ")
-    line = line:gsub("%s+", " ")
-    line = line:match("^%s*(.-)%s*$")
     return line
 end
 
@@ -153,6 +152,7 @@ end
 
 -- opts.command_file_filter_function(lines) - function that takes the lines and filters the lines before regex is being run on them
 -- lines - a string with the content of the command file
+-- TODO: change so that this is done with a function setup by the user
 -- opts.replace_commands: a table with key = sub_command that you want to replace, value what you want to replace the sub_command with
 -- opts.add_commands: a table with the key = command that you want to add to, value = sub_commands you want to increase with
 -- / char in the command line instructs the function to count the next row as a continuation of the command on the next line
@@ -253,17 +253,15 @@ M.parse_command_file = function(opts)
 end
 
 M.create_output_buffer = function()
-    -- Create a new buffer that's not listed
     local bufnr = vim.api.nvim_create_buf(false, true)
 
-    -- Set up the buffer to be a scratch buffer
     vim.api.nvim_buf_set_option(bufnr, 'buftype', 'nofile')
     vim.api.nvim_buf_set_option(bufnr, 'bufhidden', 'wipe')
     vim.api.nvim_buf_set_option(bufnr, 'swapfile', false)
 
-    -- Create a new horizontal split and set the newly created buffer to the active window
     vim.cmd('belowright split')
-    vim.cmd('resize 10')
+    -- TODO: make the size a option
+    vim.cmd('resize 15')
     vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), bufnr)
 
     -- Delete the default empty line from the new buffer
@@ -272,21 +270,23 @@ M.create_output_buffer = function()
     return bufnr
 end
 
-M.print_to_buffer = function(bufnr, data, first_line)
+-- now it cursor is automatically moved to the newest line when its written
+M.print_to_buffer = function(bufnr, data)
+    if vim.fn.bufexists(bufnr) == 0 then
+        return
+    end
+
     if data then
         for _, line in ipairs(data) do
             if line ~= "" then
-                if first_line then
-                    -- Remove the initial empty line and set the flag to false
-                    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { line })
-                    first_line = false
-                else
-                    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { line })
-                end
+                vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { line })
             end
         end
     end
-    return first_line
+
+    local current_win = vim.api.nvim_get_current_win()
+    local current_line = vim.api.nvim_buf_line_count(bufnr)
+    vim.api.nvim_win_set_cursor(current_win, { current_line, 0 })
 end
 
 -- M.interactive_build_function decides what to do with the build command, if both this and option is passed, the option is used
@@ -312,16 +312,19 @@ M.interactive_build = function(opts)
         local bufnr = M.create_output_buffer()
         local working_directory = tostring(require('plenary.path'):new(M.current_build_file):parent())
 
-        local first_line = true
         local _ = vim.fn.jobstart(bash_command, {
             cwd = working_directory,
             on_stdout = function(_, data, _)
-                first_line = M.print_to_buffer(bufnr, data, first_line)
+                M.print_to_buffer(bufnr, data)
             end,
             on_stderr = function(_, data, _)
-                first_line = M.print_to_buffer(bufnr, data, first_line)
+                M.print_to_buffer(bufnr, data)
             end,
             on_exit = function(_, exit_code, _)
+                if vim.fn.bufexists(bufnr) == 0 then
+                    return
+                end
+
                 if exit_code ~= 0 then
                     vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { "Job failed with exit code:" .. exit_code })
                 else
