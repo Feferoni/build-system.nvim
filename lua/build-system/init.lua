@@ -1,34 +1,48 @@
 local M = {}
 
-M.root_dir = vim.fn.expand("#1:p")
+M.project_root = vim.fn.expand("#1:p")
 M.build_file_type = "Makefile"
-M.current_build_file = "/home/feferoni/tmp/source/test/test/bin/Makefile"
+M.build_command = "make"
+M.current_build_file = nil
 M.remove_commands = {}
 -- parses a string formateted like "command_name : command1 command2"
 M.build_file_regex_pattern = "([^\r\n\t]+):%s*(%S+.*)"
 
-local source_file = function(file_path)
-    if vim.fn.filereadable(file_path) == 1 then
-        local command = string.format(". %s > /dev/null && env", file_path)
-        local output = vim.fn.systemlist(command)
-        for _, line in ipairs(output) do
-            local key, value = line:match("([^=\n]+)=([^\n]*)")
-            if key and value then
-                vim.env[key] = value
-            end
-        end
-        print("Sourcing file: " .. file_path)
+-- opts.source_file_function(opts, file_path) - a function that customizes what should be done with the source_file
+local source_file = function(opts, file_path)
+    opts = opts or {}
+
+    if opts.source_file_function then
+        opts.source_file_function(opts, file_path)
     else
-        print("Build-system: can't locate setup_source_file_path: " .. file_path)
+        if vim.fn.filereadable(file_path) == 1 then
+            local command = string.format(". %s > /dev/null && env", file_path)
+            local output = vim.fn.systemlist(command)
+            for _, line in ipairs(output) do
+                local key, value = line:match("([^=\n]+)=([^\n]*)")
+                if key and value then
+                    vim.env[key] = value
+                end
+            end
+            print("Sourcing file: " .. file_path)
+        else
+            print("Build-system: can't locate setup_source_file_path: " .. file_path)
+        end
     end
 end
 
+-- opts.source_file - string to the file you want sourced, should be relative to the project root
+-- opts.source_file_function(opts, file_path) - a function that customizes what should be done with the source_file
+-- opts.remove_commands - a table with the command names that should be removed, ex:
+-- { "command_name1", "command_name2", ..., "command_name_X" }
+-- opts.build_file_type - a string with the name of the build file being looked for, Default: "Makefile"
+-- opts.build_command - a string with the name of the build command to be used, Default: "make"
 M.setup = function(opts)
     opts = opts or {}
 
     if opts.setup_source_file_path then
-        local source_path = M.root_dir .. opts.setup_source_file_path
-        source_file(source_path)
+        local source_path = M.project_root .. opts.setup_source_file_path
+        source_file(opts, source_path)
     end
 
     if opts.build_file_type then
@@ -37,6 +51,10 @@ M.setup = function(opts)
 
     if opts.remove_commands then
         M.remove_commands = opts.remove_commands
+    end
+
+    if opts.build_command then
+        M.build_command = opts.build_command
     end
 end
 
@@ -47,13 +65,13 @@ M.find_build_file = function(opts)
 
     opts = opts or {}
     opts.search_pattern = M.build_file_type
-    local root_dir = plenary_path:new(M.root_dir)
+    local project_root = plenary_path:new(M.project_root)
     local current_folder = plenary_path:new(vim.fn.expand("%:p:h"))
     local files = {}
 
     local reached_root = false;
     while not reached_root and next(files) == nil do
-        if tostring(current_folder) == tostring(root_dir) then
+        if tostring(current_folder) == tostring(project_root) then
             reached_root = true
         end
 
@@ -63,7 +81,8 @@ M.find_build_file = function(opts)
 
     if next(files) == nil then
         print("Could not locate any build files.")
-        return ""
+        M.current_build_file = nil
+        return nil
     else
         if #files > 1 then
             local on_user_choice = function(action)
@@ -86,6 +105,8 @@ M.find_build_file = function(opts)
             print("Found build file: " .. files[1])
             M.current_build_file = files[1]
         end
+
+        return M.current_build_file
     end
 end
 
@@ -107,23 +128,43 @@ local get_filtered_command_string = function(opts, command_string)
     return final_command_string
 end
 
--- opts.command_file_filter_function: function that takes the lines and filters the lines before regex is being run on them
+local is_build_file_valid = function(opts)
+    if M.current_build_file then
+        return true
+    end
+    if vim.fn.filereadable(M.current_build_file) == 1 then
+        return true
+    end
+
+    M.find_build_file(opts)
+
+    if M.current_build_file == nil or not vim.fn.filereadable(M.current_build_file) == 1 then
+        print("Could not find build file.")
+        return false
+    end
+
+    return true
+end
+
+-- opts.command_file_filter_function(lines) - function that takes the lines and filters the lines before regex is being run on them
+-- lines - a string with the content of the command file
 -- opts.replace_commands: a table with key = sub_command that you want to replace, value what you want to replace the sub_command with
 -- opts.add_commands: a table with the key = command that you want to add to, value = sub_commands you want to increase with
 -- / char in the command line instructs the function to count the next row as a continuation of the command on the next line
 M.parse_command_file = function(opts)
-    if not M.current_build_file then
-        print("No build file set")
+    opts = opts or {}
+
+    if not is_build_file_valid(opts) then
         return
     end
 
-    if not vim.fn.filereadable(M.current_build_file) == 1 then
-        print("Build file set is not valid: " .. M.current_build_file)
+    local file = io.open(M.current_build_file, "r")
+    if file == nil then
+        print("Could not open file: " .. M.current_build_file)
+        return
     end
 
-    opts = opts or {}
-
-    local lines = io.open(M.current_build_file, "r"):read("*a")
+    local lines = file:read("*a")
 
     if opts.command_file_filter_function then
         lines = opts.command_file_filter_function(lines)
@@ -206,7 +247,47 @@ M.parse_command_file = function(opts)
     return final_result
 end
 
--- opts.build_function decides what to do with the build command
+local create_output_buffer = function()
+    -- Create a new buffer that's not listed
+    local bufnr = vim.api.nvim_create_buf(false, true)
+
+    -- Set up the buffer to be a scratch buffer
+    vim.api.nvim_buf_set_option(bufnr, 'buftype', 'nofile')
+    vim.api.nvim_buf_set_option(bufnr, 'bufhidden', 'wipe')
+    vim.api.nvim_buf_set_option(bufnr, 'swapfile', false)
+
+    -- Create a new horizontal split and set the newly created buffer to the active window
+    vim.cmd('belowright split')
+    vim.cmd('resize 10')
+    vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), bufnr)
+
+    -- Delete the default empty line from the new buffer
+    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, {})
+
+    return bufnr
+end
+
+local print_to_buffer = function(bufnr, data, first_line)
+    if data then
+        for _, line in ipairs(data) do
+            if line ~= "" then
+                if first_line then
+                    -- Remove the initial empty line and set the flag to false
+                    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { line })
+                    first_line = false
+                else
+                    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { line })
+                end
+            end
+        end
+    end
+    return first_line
+end
+
+-- opts.build_function decides what to do with the build command, format for result_table passed to it:
+--  {                                                                                                                                                                                                                                                                                                                                                                                           command4 = " clang++"                                                                                                                                                                                                                                                                                                                                                                   }                                                                                                                                                                                                                                                                                                                                                                                         {                                                                                                                                                                                                                                                                                                                                                                                           command5 = " clang++ clangcommand3"                                                                                                                                                                                                                                                                                                                                                     }
+--      command_name = " command1 command2 command3"
+--  }
 M.interactive_build = function(opts)
     opts = opts or {}
 
@@ -217,12 +298,31 @@ M.interactive_build = function(opts)
     end
 
     local on_user_choice = function(result_table)
-        if not result_table then
+        if not result_table or next(result_table) == nil then
             return
         end
+        local command, _ = next(result_table)
+        local bash_command = M.build_command .. " " .. command
+        local bufnr = create_output_buffer()
+        local working_directory = tostring(require('plenary.path'):new(M.current_build_file):parent())
 
-        local command, command_string = next(result_table)
-        print(command .. ": " .. command_string)
+        local first_line = true
+        local _ = vim.fn.jobstart(bash_command, {
+            cwd = working_directory,
+            on_stdout = function(_, data, _)
+                first_line = print_to_buffer(bufnr, data, first_line)
+            end,
+            on_stderr = function(_, data, _)
+                first_line = print_to_buffer(bufnr, data, first_line)
+            end,
+            on_exit = function(_, exit_code, _)
+                if exit_code ~= 0 then
+                    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { "Job failed with exit code:" .. exit_code })
+                else
+                    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { "Job completed successfully!" })
+                end
+            end,
+        })
     end
 
     if opts.build_function then
