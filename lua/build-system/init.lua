@@ -5,6 +5,7 @@ M.build_file_type = "Makefile"
 M.build_command = "make"
 M.current_build_file = nil
 M.remove_commands = {}
+M.interactive_build_function = nil
 -- parses a string formateted like "command_name : command1 command2"
 M.build_file_regex_pattern = "([^\r\n\t]+):%s*(%S+.*)"
 
@@ -55,6 +56,10 @@ M.setup = function(opts)
 
     if opts.build_command then
         M.build_command = opts.build_command
+    end
+
+    if opts.interactive_build_function then
+        M.interactive_build_function = opts.interactive_build_function
     end
 end
 
@@ -247,7 +252,7 @@ M.parse_command_file = function(opts)
     return final_result
 end
 
-local create_output_buffer = function()
+M.create_output_buffer = function()
     -- Create a new buffer that's not listed
     local bufnr = vim.api.nvim_create_buf(false, true)
 
@@ -267,7 +272,7 @@ local create_output_buffer = function()
     return bufnr
 end
 
-local print_to_buffer = function(bufnr, data, first_line)
+M.print_to_buffer = function(bufnr, data, first_line)
     if data then
         for _, line in ipairs(data) do
             if line ~= "" then
@@ -284,7 +289,8 @@ local print_to_buffer = function(bufnr, data, first_line)
     return first_line
 end
 
--- opts.build_function decides what to do with the build command, format for result_table passed to it:
+-- M.interactive_build_function decides what to do with the build command, if both this and option is passed, the option is used
+-- opts.interactive_build_function decides what to do with the build command, format for result_table passed to it:
 --  {                                                                                                                                                                                                                                                                                                                                                                                           command4 = " clang++"                                                                                                                                                                                                                                                                                                                                                                   }                                                                                                                                                                                                                                                                                                                                                                                         {                                                                                                                                                                                                                                                                                                                                                                                           command5 = " clang++ clangcommand3"                                                                                                                                                                                                                                                                                                                                                     }
 --      command_name = " command1 command2 command3"
 --  }
@@ -303,17 +309,17 @@ M.interactive_build = function(opts)
         end
         local command, _ = next(result_table)
         local bash_command = M.build_command .. " " .. command
-        local bufnr = create_output_buffer()
+        local bufnr = M.create_output_buffer()
         local working_directory = tostring(require('plenary.path'):new(M.current_build_file):parent())
 
         local first_line = true
         local _ = vim.fn.jobstart(bash_command, {
             cwd = working_directory,
             on_stdout = function(_, data, _)
-                first_line = print_to_buffer(bufnr, data, first_line)
+                first_line = M.print_to_buffer(bufnr, data, first_line)
             end,
             on_stderr = function(_, data, _)
-                first_line = print_to_buffer(bufnr, data, first_line)
+                first_line = M.print_to_buffer(bufnr, data, first_line)
             end,
             on_exit = function(_, exit_code, _)
                 if exit_code ~= 0 then
@@ -325,8 +331,12 @@ M.interactive_build = function(opts)
         })
     end
 
-    if opts.build_function then
-        on_user_choice = opts.build_function
+    if M.interactive_build_function then
+        on_user_choice = M.interactive_build_function
+    end
+
+    if opts.interactive_build_function then
+        on_user_choice = opts.interactive_build_function
     end
 
     vim.ui.select(commands, {
