@@ -60,4 +60,35 @@ M.find_build_file = function(opts)
     return found_file
 end
 
+M.get_file_modification_epoch_time = function(file_path)
+    if not file_path or file_path == "" then
+        return nil
+    end
+
+    local command = "stat -c '%Y' " .. "'" .. file_path .. "'"
+    local handle = io.popen(command)
+    if handle == nil then
+        return nil
+    end
+
+    local result = handle:read("*a")
+    handle:close()
+
+    return result:gsub("^%s*(.-)%s*$", "%1")
+end
+
+-- Returns true if the file has been modified since the given epoch time
+M.cmp_file_alter_time = function(file_path, epoch_time)
+    if not file_path or file_path == "" then
+        return false
+    end
+
+    local file_epoch_time = M.get_file_modification_epoch_time(file_path)
+    if not file_epoch_time then
+        return false
+    end
+
+    return file_epoch_time > epoch_time
+end
+
 return M
