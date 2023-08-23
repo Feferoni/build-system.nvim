@@ -1,20 +1,12 @@
 local Dev = require("build-system.dev")
-local log = Dev.log
 local path = require('plenary.path')
 local scan_dir = require('plenary.scandir')
 
 local M = {}
-M.build_file_type = "Makefile"
 M.project_root = vim.fn.expand("#1:p")
-M.current_build_file = nil
+M.last_used_build_file = nil
 
-M.find_build_file = function(opts)
-    opts = opts or {}
-
-    if opts.search_pattern == nil then
-        opts.search_pattern = M.build_file_type
-    end
-
+M.find_build_file = function(file_search_pattern)
     local project_root = path:new(M.project_root)
     local current_location = vim.fn.expand("%:p:h")
     local current_folder = path:new(current_location)
@@ -26,6 +18,8 @@ M.find_build_file = function(opts)
             reached_root = true
         end
 
+        local opts = {}
+        opts.search_pattern = file_search_pattern
 
         files = scan_dir.scan_dir(tostring(current_folder), opts)
         current_folder = current_folder:parent()
@@ -56,7 +50,7 @@ M.find_build_file = function(opts)
             end
         }, on_user_choice)
     end
-    M.current_build_file = found_file
+    M.last_used_build_file = found_file
     return found_file
 end
 
