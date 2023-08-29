@@ -30,24 +30,6 @@ M.parse_make_file = function(file_path)
     return commands
 end
 
-local set_cursor_to_end = function(bufnr)
-    local current_win = vim.api.nvim_get_current_win()
-    local current_line = vim.api.nvim_buf_line_count(bufnr)
-    vim.api.nvim_win_set_cursor(current_win, { current_line, 0 })
-end
-
-local write_to_buf = function(bufnr, text, should_cursor_move)
-    if vim.fn.bufexists(bufnr) == 0 then
-        return
-    end
-
-    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, { text })
-
-    if should_cursor_move then
-        set_cursor_to_end(bufnr)
-    end
-end
-
 M.create_output_buffer = function()
     local bufnr = vim.api.nvim_create_buf(false, true)
 
@@ -64,35 +46,14 @@ M.create_output_buffer = function()
     vim.cmd(string.format('resize %d', bs.buffer_layout.size))
 
     vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false,
-        { "-- build system buffer --" })
 
-    return bufnr
-end
+    -- vim.cmd("term") -- open terminal
+    vim.cmd("term zsh -i") -- open terminal
+    vim.cmd("norm G") -- scroll to bottom
+    local channel_id = vim.b.terminal_job_id
+    vim.cmd('wincmd p') -- go back to previous window
 
-M.print_to_buffer = function(bufnr, data)
-    if not data then
-        return
-    end
-
-    for i = #data, 1, -1 do
-        local line = data[i]
-        if line ~= "" then
-            write_to_buf(bufnr, line, true)
-        end
-    end
-end
-
-M.exit_print = function(exit_code, bufnr, command)
-    local output = "Job finish: \"" .. command .. "\""
-
-    if exit_code ~= 0 then
-        output = output .. " failed with exit code: " .. exit_code
-    else
-        output = output .. " completed sucessfully!"
-    end
-
-    write_to_buf(bufnr, output, true)
+    return channel_id
 end
 
 M.interactive_make_build = function()
@@ -117,8 +78,6 @@ M.interactive_make_build = function()
             return
         end
 
-        print(result)
-
         local command_to_run = "make " .. result
 
         if working_directory == nil then
@@ -126,8 +85,8 @@ M.interactive_make_build = function()
             return
         end
 
-        local bufnr = M.create_output_buffer()
-        M.jobstart(bufnr, command_to_run, working_directory)
+        local channel_id = M.create_output_buffer()
+        M.send_commands_to_channel(channel_id, working_directory, command_to_run)
     end
 
     vim.ui.select(parsed_commands, {
@@ -136,20 +95,11 @@ M.interactive_make_build = function()
     }, on_user_choice)
 end
 
-M.jobstart = function(bufnr, command_to_run, working_directory)
-    write_to_buf(bufnr, "Job start: \"" .. command_to_run .. "\"", true)
-    local _ = vim.fn.jobstart(command_to_run, {
-        cwd = working_directory,
-        on_stdout = function(_, data, _)
-            M.print_to_buffer(bufnr, data)
-        end,
-        on_stderr = function(_, data, _)
-            M.print_to_buffer(bufnr, data)
-        end,
-        on_exit = function(_, exit_code, _)
-            M.exit_print(exit_code, bufnr, command_to_run)
-        end
-    })
+M.send_commands_to_channel = function(channel_id, working_directory, command_to_run)
+    vim.api.nvim_chan_send(channel_id, "cd " .. working_directory .. "\n")
+    vim.api.nvim_chan_send(channel_id, command_to_run .. "\n")
+    vim.api.nvim_chan_send(channel_id, "echo $SHELL\n")
 end
 
 return M
+
